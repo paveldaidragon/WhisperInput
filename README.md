@@ -1,88 +1,113 @@
 # Whisper-PTT
 
-Push-to-talk voice-to-text tool for Windows. Hold a hotkey, speak, release — transcribed text is pasted into the active window.
+Push-to-talk voice-to-text for Windows. Hold a hotkey 1.5s, speak, release — transcribed text is pasted into the active window.
 
 ## Features
 
-- **Multi-backend hotkey**: `keyboard` → `pynput` → `win32 RegisterHotKey` (auto-fallback)
-- **Ring buffer prebuffer**: captures the first word (no clipping)
-- **faster-whisper**: CTranslate2-based inference, model loaded once at startup
-- **Silence gate**: skips low-energy audio
-- **VS Code / any app**: pastes via Ctrl+V into whatever was active
-- **HuggingFace mirror support**: `HF_ENDPOINT` env var
+- **System tray app** — green/yellow/gray icon, left-click toggle, right-click menu
+- **No prebuffer** — mic is CLOSED by default, opens only after 1.5s hold (no noise, no hallucinations)
+- **faster-whisper** — CTranslate2 inference, model loaded once at startup
+- **English words in Russian speech** — `initial_prompt` with IT vocabulary (Docker, GitHub, pipeline...)
+- **Auto language detection** — `--lang auto` for RU/EN mixed speech
+- **Paste bug fix** — saves foreground window before recording, restores it before paste
+- **PyInstaller exe** — single-file distribution, no Python required
+- **Autostart** — Task Scheduler integration
 
 ## Quick Start
 
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Option A: Run from source
 
-2. Configure (optional — see `.env.example`):
-   ```bash
-   cp .env.example .env
-   # Edit .env to change hotkey, language, model
-   ```
+```bash
+pip install -r requirements.txt
+python tools/tray_app.py          # system tray app (recommended)
+# or
+python tools/whisper_ptt.py       # CLI mode
+```
 
-3. Run:
-   ```bash
-   python tools/whisper_ptt.py
-   ```
+### Option B: Build .exe
 
-4. Hold your hotkey (default: `Alt`), speak, release. Text appears in the active window.
+```bash
+build.bat                         # produces dist\WhisperPTT.exe
+install_task.bat                  # autostart at logon
+```
+
+### Option C: Download release
+
+Grab `WhisperPTT.exe` from [Releases](https://github.com/paveldaidragon/WhisperInput/releases), run it.
 
 ## Usage
 
+Hold your hotkey (default: `F9`) for 1.5 seconds → "Recording..." → speak → release → text appears in the active window.
+
+**Tray controls:**
+- Left-click icon: toggle recording
+- Right-click: Start / Stop / Settings / Quit
+
+**CLI options:**
 ```bash
-python tools/whisper_ptt.py                        # defaults
-python tools/whisper_ptt.py --key F9               # F9 key
-python tools/whisper_ptt.py --key ctrl+f9          # Ctrl+F9 combo
-python tools/whisper_ptt.py --lang en --model base # English, base model
-python tools/whisper_ptt.py --backend win32        # force win32 backend
-python tools/whisper_ptt.py --list-keys           # show available keys
+python tools/whisper_ptt.py --key f9 --model medium --lang auto --backend keyboard
+python tools/whisper_ptt.py --key alt                    # Alt key
+python tools/whisper_ptt.py --key ctrl+f9                # Ctrl+F9 combo
+python tools/whisper_ptt.py --model base                 # faster, lower quality
+python tools/whisper_ptt.py --list-keys                  # show available keys
 ```
 
 ## Configuration
 
+Copy `.env.example` to `.env` and edit:
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WHISPER_PTT_HOTKEY` | `alt` | Hold key (F1-F12, alt, space, ctrl+f9, etc.) |
-| `WHISPER_PTT_LANGUAGE` | `en` | BCP-47 language code |
-| `WHISPER_PTT_MODEL` | `small` | Model size (tiny/base/small/medium/large-v3) |
-| `WHISPER_PTT_PASTE` | `true` | Paste to active window |
+| `WHISPER_PTT_HOTKEY` | `f9` | Hold key (F1-F12, alt, space, ctrl+f9, etc.) |
+| `WHISPER_PTT_LANGUAGE` | `ru` | BCP-47 code, or `auto` for mixed RU/EN |
+| `WHISPER_PTT_MODEL` | `medium` | tiny / base / small / medium / large-v3 |
+| `WHISPER_PTT_PASTE` | `true` | Paste via Ctrl+V |
 | `WHISPER_PTT_COPY_TO_CLIPBOARD` | `true` | Copy to clipboard |
-| `WHISPER_PTT_KEYS_AFTER_PASTE` | `enter` | Key to send after paste (enter, ctrl+enter, none) |
-| `WHISPER_PTT_BACKEND` | `auto` | Hotkey backend (keyboard/pynput/win32/auto) |
+| `WHISPER_PTT_KEYS_AFTER_PASTE` | `none` | Key after paste (enter, ctrl+enter, none) |
+| `WHISPER_PTT_BACKEND` | `auto` | keyboard / pynput / win32 / auto |
+
+## Performance
+
+Benchmarked on Intel i5-9500F (6 cores, 3.0 GHz), 16GB RAM:
+
+| Model | Size | 12s audio | Quality |
+|-------|------|-----------|---------|
+| base | 142MB | ~1s | Fair |
+| small | 466MB | ~5s | Good |
+| **medium** | **1.5GB** | **~13s** | **Very good** |
+| large-v3 | 2.9GB | ~30-40s | Best |
+
+Optimizations applied: `beam_size=1`, `best_of=1`, `temperature=0`, `vad_filter=True`.
 
 ## Architecture
 
 ```
 whisper_ptt.py
-├── prebuffer_worker()     # Ring buffer thread (always recording last 0.5s)
-├── start_recording()      # Copy prebuffer → _audio_frames, set flag
-├── ring buffer append    # While _recording, append new chunks
-├── stop_recording_and_process()
-│   ├── frames_to_wav_bytes()    # Bytes → WAV in memory
-│   ├── transcribe_wav_bytes()   # faster-whisper (loaded once)
-│   └── paste_to_front()
-│       ├── pyperclip.copy()
-│       ├── keyboard.send("ctrl+v")  (or pynput fallback)
-│       ├── pyperclip.copy(old)     # restore clipboard
-│       └── keyboard.send(enter)   # optional
-└── main()
-    ├── WhisperModel(load once)
-    ├── prebuffer_worker thread
-    └── hotkey backend (keyboard → pynput → win32)
+├── WhisperPTT class
+│   ├── open_mic_and_record()     # save foreground HWND, open mic
+│   ├── close_mic_and_process()   # close mic, transcribe in background
+│   ├── _transcribe_wav_bytes()   # faster-whisper (loaded once)
+│   └── _paste_to_front()         # restore foreground HWND, Ctrl+V
+├── make_keyboard_backend()       # hold/release
+├── make_win32_backend()          # toggle (press/press)
+├── make_pynput_backend()         # hold/release
+└── main()                        # CLI entry point
+
+tray_app.py                       # system tray (pystray + Pillow)
+WhisperPTT.spec                   # PyInstaller spec
+build.bat                         # build .exe
+install_task.bat / uninstall_task.bat  # autostart via Task Scheduler
 ```
 
 ## Requirements
 
 - Python 3.9-3.11
-- Windows 10/11 (win32 backend) or Linux/macOS (keyboard/pynput)
+- Windows 10/11
 - Microphone
+- For `.exe`: no Python needed
 
 ## References
 
-- Based on [sancau/whisper_ptt](https://github.com/sancau/whisper_ptt) architecture (prebuffer ring buffer, keyboard+pynput backends)
+- [sancau/whisper_ptt](https://github.com/sancau/whisper_ptt) — original architecture
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — CTranslate2
 - [OpenAI Whisper](https://github.com/openai/whisper)
-- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2)
