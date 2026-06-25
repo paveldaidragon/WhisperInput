@@ -1,0 +1,10 @@
+faster-whisper
+pyaudio
+pyperclip
+numpy
+pynput
+keyboard
+python-dotenv
+pystray
+Pillow
+appdirs
