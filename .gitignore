@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.spec.bak
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Models (large, download on first run)
+models/
+*.wav
+*.mp3
+
+# Instance config (user-specific)
+.env
+
+# PyInstaller
+*.spec
+!WhisperPTT.spec
+
+# OS
+Thumbs.db
+.DS_Store
