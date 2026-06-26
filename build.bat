@@ -4,7 +4,7 @@ echo Installing dependencies...
 pip install -r requirements.txt pyinstaller
 echo.
 echo Building WhisperPTT.exe...
-pyinstaller WhisperPTT.spec --clean --noconfirm
+python -m PyInstaller WhisperPTT.spec --clean --noconfirm
 echo.
 if exist "dist\WhisperPTT.exe" (
     echo Build complete: dist\WhisperPTT.exe

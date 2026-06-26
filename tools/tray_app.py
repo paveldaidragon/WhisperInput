@@ -30,9 +30,12 @@ def resource_path(relative):
 
 
 def _env_path():
-    """Find .env file."""
-    d = resource_path("..")
-    return os.path.join(d, ".env")
+    """Find .env file — next to the .exe, or next to script in dev."""
+    if hasattr(sys, '_MEIPASS'):
+        # PyInstaller: .exe is in dist/, look next to it
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        return os.path.join(exe_dir, ".env")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
 
 
 class TrayApp:
@@ -143,7 +146,6 @@ class TrayApp:
     def _init_ptt(self):
         """Initialize WhisperPTT (heavy: loads model)."""
         try:
-            load_dotenv = True
             env = _env_path()
             try:
                 from dotenv import load_dotenv as ld
