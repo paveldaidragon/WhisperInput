@@ -22,6 +22,43 @@ import wave
 import time
 import threading
 import ctypes
+import logging
+
+# Setup file logging — works in both dev and PyInstaller exe
+def _setup_logging():
+    _log_dir = os.environ.get("TEMP", os.path.expanduser("~"))
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_file = os.path.join(_log_dir, "WhisperPTT_debug.log")
+    logger = logging.getLogger("WhisperPTT")
+    if not logger.handlers:
+        try:
+            fh = logging.FileHandler(_log_file, encoding="utf-8")
+            fh.setLevel(logging.DEBUG)
+            fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+            logger.addHandler(fh)
+            logger.setLevel(logging.DEBUG)
+        except Exception:
+            pass
+    return logger
+
+
+def _init_logging_once():
+    if not _init_logging_once._called:
+        _init_logging_once._called = True
+        _setup_logging()
+
+
+_init_logging_once._called = False
+
+# Module-level debug — runs on import
+for _lp in [r"D:\AI\WhisperInput\whisper_init.log",
+             os.path.join(os.environ.get("TEMP", ""), "whisper_init.log"),
+             os.path.join(os.path.expanduser("~"), "whisper_init.log")]:
+    try:
+        with open(_lp, "a", encoding="utf-8") as f:
+            f.write(f"[MODULE] imported ok, name={__name__}, argv={sys.argv}\n")
+    except Exception:
+        pass
 
 if sys.stdout and sys.stdout.encoding != "utf-8":
     try:
@@ -84,6 +121,14 @@ class WhisperPTT:
     def __init__(self, model="small", language="ru",
                  paste=True, copy=True, keys_after=None,
                  hold_delay=1.5, initial_prompt=None):
+        _log_dir = os.path.expanduser(r"~\AppData\Local\WhisperPTT")
+        os.makedirs(_log_dir, exist_ok=True)
+        try:
+            with open(os.path.join(_log_dir, "debug.log"), "a", encoding="utf-8") as f:
+                f.write(f"[ENTER] __init__ model={model} lang={language}\n")
+        except Exception:
+            pass
+        _init_logging_once()
         self.model_name = model
         self.language = language if language != "auto" else None
         self.paste_enabled = paste
@@ -113,6 +158,16 @@ class WhisperPTT:
         """Set callback fn(text) called after successful transcription."""
         self._on_transcribe = fn
 
+    def _log(self, msg):
+        """Write debug message to log file — AppData."""
+        log_dir = os.path.expanduser(r"~\AppData\Local\WhisperPTT")
+        os.makedirs(log_dir, exist_ok=True)
+        try:
+            with open(os.path.join(log_dir, "debug.log"), "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        except Exception:
+            pass
+
     def _status(self, s):
         if self._on_status:
             self._on_status(s)
@@ -124,8 +179,10 @@ class WhisperPTT:
         # Save foreground window BEFORE opening mic (paste bug fix)
         try:
             self.foreground_hwnd = ctypes.windll.user32.GetForegroundWindow()
-        except Exception:
+            self._log(f"open_mic: saved hwnd={self.foreground_hwnd}")
+        except Exception as e:
             self.foreground_hwnd = None
+            self._log(f"open_mic: hwnd save failed: {e}")
 
         self.audio_frames = []
         self.mic_stream = self.pyaudio_instance.open(
@@ -198,7 +255,7 @@ class WhisperPTT:
                 initial_prompt=self.initial_prompt,
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()
-            print(f" Whisper ({time.time() - t0:.1f}s, lang={info.language}): {text}", flush=True)
+            self._log(f"Whisper: {text}")
             return text
         finally:
             try:
@@ -208,34 +265,50 @@ class WhisperPTT:
 
     def _paste_to_front(self, text):
         """Copy to clipboard and/or paste to active window."""
+        log = []
         if not text.strip():
             return
+        self._log(f"paste start: hwnd={self.foreground_hwnd}, text={text[:50]}")
 
         # Restore foreground window (paste bug fix)
         if self.foreground_hwnd:
             try:
                 ctypes.windll.user32.SetForegroundWindow(self.foreground_hwnd)
-                time.sleep(0.05)
-            except Exception:
-                pass
+                self._log("focus ok")
+                time.sleep(0.1)
+            except Exception as e:
+                self._log(f"focus fail: {e}")
 
-        old_clip = pyperclip.paste() if (self.copy_enabled or self.paste_enabled) else ""
+        try:
+            old_clip = pyperclip.paste() if (self.copy_enabled or self.paste_enabled) else ""
+        except Exception as e:
+            old_clip = ""
+            self._log(f"clip read fail: {e}")
 
         if self.copy_enabled:
-            pyperclip.copy(text)
-            print(" Copied to clipboard", flush=True)
+            try:
+                pyperclip.copy(text)
+                self._log("copied")
+            except Exception as e:
+                self._log(f"copy fail: {e}")
 
         if self.paste_enabled:
             pasted = False
 
+            # Primary: SendInput via ctypes (GUI-safe, no console needed)
             if not pasted:
                 try:
-                    import keyboard as kb
-                    kb.send("ctrl+v")
+                    user32 = ctypes.windll.user32
+                    user32.keybd_event(0x11, 0, 0, 0)
+                    user32.keybd_event(0x56, 0, 0, 0)
+                    user32.keybd_event(0x56, 0, 2, 0)
+                    user32.keybd_event(0x11, 0, 2, 0)
                     pasted = True
-                except Exception:
-                    pass
+                    self._log("pasted via SendInput")
+                except Exception as e:
+                    self._log(f"SendInput fail: {e}")
 
+            # Fallback: pynput
             if not pasted:
                 try:
                     from pynput.keyboard import Controller, Key
@@ -245,13 +318,27 @@ class WhisperPTT:
                         c.press("v")
                         c.release("v")
                     pasted = True
-                except Exception:
-                    pass
+                    self._log("pasted via pynput")
+                except Exception as e:
+                    self._log(f"pynput fail: {e}")
+
+            # Fallback2: keyboard
+            if not pasted:
+                try:
+                    import keyboard as kb
+                    kb.send("ctrl+v")
+                    pasted = True
+                    self._log("pasted via keyboard")
+                except Exception as e:
+                    self._log(f"keyboard fail: {e}")
 
             if pasted:
                 time.sleep(0.1)
                 if self.copy_enabled and old_clip:
-                    pyperclip.copy(old_clip)
+                    try:
+                        pyperclip.copy(old_clip)
+                    except Exception:
+                        pass
                 if self.keys_after_paste:
                     time.sleep(0.05)
                     try:
@@ -259,13 +346,15 @@ class WhisperPTT:
                         kb.send(self.keys_after_paste)
                     except Exception:
                         pass
-                    print(f" Pasted + {self.keys_after_paste.upper()}", flush=True)
+                    self._log(f"Pasted + {self.keys_after_paste.upper()} [{', '.join(log)}]")
                 else:
-                    print(" Pasted to active window", flush=True)
+                    self._log(f"Pasted [{', '.join(log)}]")
+            else:
+                self._log(f"Paste FAILED [{', '.join(log)}]")
 
     def _process_and_paste(self, frames):
         duration_sec = len(frames) * CHUNK_SIZE / SAMPLE_RATE
-        print(f" Recorded {duration_sec:.1f}s", flush=True)
+        self._log(f"Recorded {duration_sec:.1f}s")
 
         if duration_sec <= 0.5 or len(frames) < MIN_FRAMES:
             print(" Too short, skipping", flush=True)
